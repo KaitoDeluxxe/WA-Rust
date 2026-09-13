@@ -1,0 +1,11 @@
+{
+  "name": "whatsapp-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lightweight cross-platform desktop wrapper for WhatsApp Web (Tauri 2.x + Rust).",
+  "scripts": {
+    "tauri": "cargo tauri",
+    "dev": "cargo tauri dev",
+    "build": "cargo tauri build"
+  }
+}

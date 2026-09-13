@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WhatsApp Desktop</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0b141a;
+        color: #e9edef;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+      }
+      #boot {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .spinner {
+        width: 36px;
+        height: 36px;
+        border: 3px solid #2a3942;
+        border-top-color: #25d366;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      #err {
+        max-width: 560px;
+        padding: 12px 16px;
+        background: #1f2c33;
+        border: 1px solid #3b4a54;
+        border-radius: 8px;
+        display: none;
+        white-space: pre-wrap;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot">
+      <div class="spinner"></div>
+      <div id="status">Loading WhatsApp…</div>
+      <div id="err"></div>
+    </div>
+
+    <script>
+      // ---- Notification polyfill ----
+      // Must be installed BEFORE any page script touches window.Notification.
+      // We proxy every Notification call to the Rust backend via Tauri's invoke,
+      // which routes to a real OS notification (tauri-plugin-notification).
+      (function installNotificationBridge() {
+        if (window.__waNotificationInstalled) return;
+        window.__waNotificationInstalled = true;
+
+        const Permission = {
+          DEFAULT: "default",
+          GRANTED: "granted",
+          DENIED: "denied",
+        };
+
+        // Initial permission state is decided by Rust at startup. Default to
+        // "granted" so WhatsApp Web's UI doesn't show its own permission prompt;
+        // the Rust side will request the OS permission before reporting.
+        let current = Permission.GRANTED;
+
+        // Ask the backend for the actual OS-level permission state.
+        try {
+          const { invoke } = window.__TAURI__.core;
+          invoke("plugin:notification|is_permission_granted")
+            .then((g) => { current = g ? Permission.GRANTED : Permission.DENIED; })
+            .catch(() => {});
+        } catch (_) {}
+
+        class NativeNotification {
+          constructor(title, options = {}) {
+            this.title = String(title || "");
+            this.options = options;
+            this._listeners = {};
+            try {
+              const { invoke } = window.__TAURI__.core;
+              invoke("plugin:notification|notify", {
+                options: {
+                  title: this.title,
+                  body: options.body || "",
+                  icon: options.icon || undefined,
+                  silent: !!options.silent,
+                },
+              }).catch((e) => {
+                this._dispatch("error", e);
+              });
+              // Web Notification semantics: dispatch show immediately.
+              queueMicrotask(() => this._dispatch("show"));
+            } catch (e) {
+              this._dispatch("error", e);
+            }
+          }
+
+          addEventListener(type, cb) {
+            (this._listeners[type] = this._listeners[type] || []).push(cb);
+          }
+          removeEventListener(type, cb) {
+            const arr = this._listeners[type] || [];
+            const i = arr.indexOf(cb);
+            if (i >= 0) arr.splice(i, 1);
+          }
+          _dispatch(type, payload) {
+            const arr = this._listeners[type] || [];
+            for (const cb of arr) {
+              try { cb({ type, target: this, ...(payload ? { detail: payload } : {}) }); }
+              catch (_) {}
+            }
+          }
+
+          static get permission() { return current; }
+
+          static async requestPermission() {
+            try {
+              const { invoke } = window.__TAURI__.core;
+              const granted = await invoke("plugin:notification|request_permission");
+              current = granted ? Permission.GRANTED : Permission.DENIED;
+              return current;
+            } catch (_) {
+              return current;
+            }
+          }
+        }
+
+        // Replace the built-in. Sites that stash the original first will still
+        // get a coherent polyfill — common pattern (see: GitHub, Slack web).
+        const orig = window.Notification;
+        window.Notification = NativeNotification;
+        // Some sites compare to the original constructor; preserve the binding
+        // so `new orig(...)` keeps working as a fallback path.
+        Object.defineProperty(window, "Notification", {
+          configurable: true,
+          writable: true,
+          value: NativeNotification,
+        });
+        NativeNotification.permission = current;
+
+        // Some browsers expose permission as a getter on the prototype too;
+        // mirror it so `Notification.permission` reads correctly.
+        try {
+          Object.defineProperty(NativeNotification, "permission", {
+            configurable: true,
+            get() { return current; },
+          });
+        } catch (_) {}
+
+        window.addEventListener("DOMContentLoaded", () => {
+          document.getElementById("status").textContent =
+            "Connecting to WhatsApp Web…";
+        });
+      })();
+
+      // ---- Navigate to WhatsApp Web ----
+      // Using location.replace so the shim doesn't sit in the back-stack.
+      try {
+        location.replace("https://web.whatsapp.com/");
+      } catch (e) {
+        const err = document.getElementById("err");
+        err.style.display = "block";
+        err.textContent = "Failed to open WhatsApp Web: " + (e && e.message || e);
+      }
+    </script>
+  </body>
+</html>
